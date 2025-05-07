@@ -96,12 +96,3 @@ def create_faiss_index(embedding_dim):
     """
     index = faiss.IndexFlatL2(embedding_dim)  # L2 distance (Euclidean distance)
     return index
-
-# Example usage
-input_folder = "documentations_ocr"
-faiss_index = create_faiss_index(384)  # all-MiniLM-L6-v2 generates 384-dimensional embeddings
-
-chunk_pdfs_in_directory(input_folder, faiss_index)
-
-# Optionally, save the FAISS index for future use
-faiss.write_index(faiss_index, 'faiss_index.index')

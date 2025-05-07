@@ -1,14 +1,17 @@
 import os
-import numpy as np
 import json
 import faiss
+import torch
+import numpy as np
+
 from openai import OpenAI
-
-from sentence_transformers import SentenceTransformer
 from cred import open_ai_key
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
-# Step 1: Load embeddings from the directory
+# 1: load embeddings from the directory
 def load_embeddings_from_directory(embeddings_dir):
     embeddings = []
     filenames = []
@@ -20,48 +23,49 @@ def load_embeddings_from_directory(embeddings_dir):
             embeddings.append(file_embeddings)
             filenames.append(filename)
 
-    # Stack all embeddings into a single NumPy array
     all_embeddings = np.vstack(embeddings)
     return all_embeddings, filenames
 
-# Step 2: Create a FAISS index
+
+# 2: create a FAISS index
 def create_faiss_index(embeddings):
-    index = faiss.IndexFlatL2(embeddings.shape[1])  # L2 distance for similarity
+    # L2 distance for similarity
+    index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
     return index
 
-# Step 3: Embed the query using the same model used for the documents
+# 3: embed the query using the same model used for the documents
 def embed_query(query, model):
     query_embedding = model.encode([query], convert_to_tensor=True)
     return query_embedding.cpu().numpy()
 
-# Step 4: Search the FAISS index
+
+# 4: search the FAISS index
 # change the k value to the number of nearest neighbors you want to retrieve
 def search_faiss_index(query_embedding, index, k=5):
-    distances, indices = index.search(query_embedding, k)  # Find k-nearest neighbors
+    distances, indices = index.search(query_embedding, k)
     return distances, indices
 
-# Step 5: Retrieve the relevant chunks based on the indices
+
+# 5: retrieve the relevant chunks based on the indices
 def retrieve_relevant_chunks(indices, filenames):
     relevant_chunks = []
     
-    # Load chunk texts (assuming they were saved in 'embeddings/chunk_texts.json')
+    # load chunk texts (assuming they were saved in 'embeddings/chunk_texts.json')
     with open('embeddings/chunk_texts.json', 'r', encoding='utf-8') as f:
         chunk_texts = json.load(f)
 
     for idx in indices[0]:
-        # Get the chunk text and its corresponding file source
         chunk = chunk_texts[idx]
         text = chunk['text']
         source = chunk['source']
         
-        # Store the chunk text and its file for easy display
         relevant_chunks.append(f"Chunk from file: {source}\nText: {text}\n---")
 
     return relevant_chunks
 
 
-# Main function to perform search
+# main function to perform search
 def search_documents(query, embeddings_dir):
     model = SentenceTransformer('all-MiniLM-L6-v2')
 
@@ -81,11 +85,39 @@ def search_documents(query, embeddings_dir):
     return relevant_chunks, distances
 
 
-def ask_llm_with_context(query, context_chunks, model="gpt-4"):
+def meta_llama_3_2_1b_instruct(query, relevant_chunks):
+    model_id = "meta-llama/Llama-3.2-1B-Instruct"
+
+    context = ""
+    for i in range(2):
+        context += relevant_chunks[i]
+
+    pipe = pipeline(
+        "text-generation",
+        model=model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+
+    system_prompt = "you are a helpful assisstant, please help search for the answers from the user based on the details, also provide the source of the answer, please answer in a natural way here are the details: " + context
+
+    messages = [
+        {"role": "system", "content": f"{system_prompt}"},
+        {"role": "user", "content": f"{query}"},
+    ]
+    outputs = pipe(
+        messages,
+        max_new_tokens=256,
+    )
+
+    return outputs[0]["generated_text"][-1]
+
+
+def gpt_4_api(query, relevant_chunks, model="gpt-4"):
     # Combine context chunks into one string
     context = ""
     for i in range(2):
-        context += context_chunks[i]
+        context += relevant_chunks[i]
 
     print("Context:", context)
     print("\n\n\n")
@@ -102,16 +134,26 @@ def ask_llm_with_context(query, context_chunks, model="gpt-4"):
     )
     reply = response.choices[0].message.content
 
-    return reply
+
+def google_gemma_2b(query, relevant_chunks):
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-2b")
+    model = AutoModelForCausalLM.from_pretrained("google/gemma-2b", device_map="auto")
+
+    context = ""
+    for i in range(2):
+        context += relevant_chunks[i]
+
+    system_prompt = "you are a helpful assisstant, please help search for the answers from the user based on the details, also provide the source of the answer, please answer in a natural way" \
+                "here are the details: " + context + "and here is the question: " + query
 
 
-# Example usage
-query = "How can I sign up for the CelcomDigi Postpaid 5G plan?"
+    input_text = system_prompt
+    input_ids = tokenizer(input_text, return_tensors="pt").to("cuda")
 
-# Step 1: Retrieve top relevant chunks
-relevant_chunks, _ = search_documents(query, "embeddings")
+    outputs = model.generate(**input_ids)
+    print(tokenizer.decode(outputs[0]))
 
 
-# Step 2: Ask the LLM
-answer = ask_llm_with_context(query, relevant_chunks)
-print(answer)
+
+def ask_llm_with_context(query, context_chunks):
+    google_gemma_2b(query, context_chunks)
